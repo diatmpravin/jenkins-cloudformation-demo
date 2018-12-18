@@ -125,7 +125,7 @@ Resources:
     UpdatePolicy:  # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-attribute-updatepolicy.html
       AutoScalingRollingUpdate:
         MaxBatchSize: 1
-        MinInstancesInService: 6
+        MinInstancesInService: 1
         SuspendProcesses:
           - AlarmNotification
           - AZRebalance
