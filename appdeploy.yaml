@@ -1,0 +1,212 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Description: Webservers infrastructure
+
+Parameters:
+  VPCStackName:
+    Type: String
+
+  SGStackName:
+    Type: String  
+
+  EnvironmentName:
+    Type: String
+
+  ImageId:
+    Type: String
+
+  SSHKey:
+    Type: String
+
+  # CertificateArn:
+  #   Type: String
+  #   Default:
+
+  InstanceType:
+    Type: String
+
+  MaxSize:
+    Type: String
+
+  DesiredCapacity:
+    Type: String
+
+  SCMinSize:
+    Type: String          
+
+Resources:
+  ALBLoadBalancer:
+    Type: "AWS::ElasticLoadBalancingV2::LoadBalancer"
+    Properties:
+      Tags:
+        - Key: Env
+          Value: !Ref EnvironmentName
+      Type: application
+      Scheme: internet-facing
+      Subnets:
+        - Fn::ImportValue: !Sub "${VPCStackName}-PublicA"
+        - Fn::ImportValue: !Sub "${VPCStackName}-PublicB"
+      SecurityGroups:
+        - Fn::ImportValue: !Sub "${SGStackName}-WebAppPublicALBSecurityGroup"
+
+  # ALBListener443:
+  #   Type: AWS::ElasticLoadBalancingV2::Listener
+  #   Properties:
+  #     DefaultActions:
+  #       - Type: forward
+  #         TargetGroupArn: !Ref ALBTargetGroup80
+  #     LoadBalancerArn: !Ref ALBLoadBalancer
+  #     Port: 443
+  #     Protocol: HTTPS
+      # Certificates:
+      #   - CertificateArn: !Ref CertificateArn
+
+  ALBListener80:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ALBTargetGroup80
+      LoadBalancerArn: !Ref ALBLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  ALBTargetGroup80:
+    Type: "AWS::ElasticLoadBalancingV2::TargetGroup"
+    Properties:
+      Port: 80
+      Protocol: HTTP
+      Tags:
+        - {Key: Env, Value: !Ref EnvironmentName}
+      TargetGroupAttributes:
+        - Key: stickiness.enabled
+          Value: false
+        - Key: deregistration_delay.timeout_seconds
+          Value: 600
+      VpcId:
+        Fn::ImportValue: !Sub "${VPCStackName}-Vpc"
+
+  LaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      AssociatePublicIpAddress: true
+      ImageId: !Ref ImageId
+      InstanceType: !Ref InstanceType
+      InstanceMonitoring: true
+      KeyName: !Ref SSHKey
+      SecurityGroups:
+        - Fn::ImportValue: !Sub "${SGStackName}-TCServerSecurityGroup"
+
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        - Fn::ImportValue: !Sub "${VPCStackName}-PublicA"
+        - Fn::ImportValue: !Sub "${VPCStackName}-PublicA"
+      LaunchConfigurationName: !Ref LaunchConfiguration
+      TargetGroupARNs:
+        - !Ref ALBTargetGroup80
+      Cooldown: '180'
+      MinSize: !Ref DesiredCapacity
+      MaxSize: !Ref MaxSize
+      HealthCheckType: EC2  # @TODO: for now, change to ELB later
+      Tags:
+        - Key: Env
+          Value: !Ref EnvironmentName
+          PropagateAtLaunch: true
+        - Key: Name
+          Value: !Sub AG-webservers-${EnvironmentName}
+          PropagateAtLaunch: true
+      TerminationPolicies:
+        - OldestLaunchConfiguration
+        - Default
+      MetricsCollection:
+        - Granularity: 1Minute
+    UpdatePolicy:  # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-attribute-updatepolicy.html
+      AutoScalingRollingUpdate:
+        MaxBatchSize: 1
+        MinInstancesInService: 6
+        SuspendProcesses:
+          - AlarmNotification
+          - AZRebalance
+          - ScheduledActions
+        PauseTime: PT0S
+
+  ScaleUpPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      Cooldown: '180'
+      ScalingAdjustment: 1
+
+  ScaleDownPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      Cooldown: '180'
+      ScalingAdjustment: -1
+
+  CPUAlarmHigh:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      Statistic: Average
+      AlarmDescription: Alarm if CPU too high or metric disappears indicating instance is down
+      AlarmActions:
+        - !Ref ScaleUpPolicy
+      Namespace: AWS/EC2
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref AutoScalingGroup
+      Period: '60'
+      EvaluationPeriods: '1'
+      Threshold: '60'
+      ComparisonOperator: GreaterThanThreshold
+      MetricName: CPUUtilization
+
+  CPUAlarmLow:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      Statistic: Average
+      AlarmDescription: Alarm if CPU too low
+      AlarmActions:
+        - !Ref ScaleDownPolicy
+      Namespace: AWS/EC2
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref AutoScalingGroup
+      Period: '60'
+      EvaluationPeriods: '10'
+      Threshold: '30'
+      ComparisonOperator: LessThanThreshold
+      MetricName: CPUUtilization
+
+Outputs:
+  AutoScalingGroupName:
+    Description: a reference for autoscaling groupname
+    Value:  !Ref AutoScalingGroup
+    Export:
+      Name: !Sub "${EnvironmentName}-Autoscalinggroupname"
+      
+  AlbloadbalancerName:
+    Description: a reference for autoscaling groupname
+    Value: !GetAtt ALBLoadBalancer.LoadBalancerFullName
+    Export:
+      Name: !Sub "${EnvironmentName}-ALBLoadBalancer"
+      Value: !GetAtt ALBLoadBalancer.LoadBalancerFullName
+      
+  ALBLoadBalancer:
+    Description: A reference to the alb
+    Value: !Ref ALBLoadBalancer
+
+  ALBTargetGroup80:
+    Description: A reference to the alb targetgroup 80
+    Value: !Ref ALBTargetGroup80
+
+  ALBDNS:
+    Description: dns of the alb
+    Value: !GetAtt ALBLoadBalancer.DNSName
+    Export:
+      Name: !Sub "${AWS::StackName}-ALB-DNSName"
+      Value: !GetAtt ALBLoadBalancer.DNSName
