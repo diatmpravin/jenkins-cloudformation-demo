@@ -95,7 +95,7 @@ Resources:
       InstanceMonitoring: true
       KeyName: !Ref SSHKey
       SecurityGroups:
-        - Fn::ImportValue: !Sub "${SGStackName}-TCServerSecurityGroup"
+        - Fn::ImportValue: !Sub "${SGStackName}-TCAppSecurityGroup"
 
   AutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
